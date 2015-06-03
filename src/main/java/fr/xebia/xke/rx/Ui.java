@@ -12,22 +12,19 @@ import javafx.scene.chart.XYChart;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
 import rx.Observable;
+import rx.observables.GroupedObservable;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Xebia 2015
  */
 public class Ui extends Application {
 
-    private List<String> temperatures;
-
-    private List<Position> positions;
 
     private Watcher watcher;
 
@@ -39,7 +36,6 @@ public class Ui extends Application {
     @Override
     public void start(Stage primaryStage) throws Exception {
         watcher = new Watcher();
-        temperatures = new ArrayList<>();
         stageSetup(primaryStage);
         graphSetup(primaryStage);
         primaryStage.show();
@@ -50,9 +46,6 @@ public class Ui extends Application {
     private void graphSetup(Stage stage) {
         ObservableList<XYChart.Series<String, Float>> lineChartData = FXCollections
                 .observableArrayList();
-        final XYChart.Series<String, Float> series = createSerie();
-        lineChartData.add(series);
-
         NumberAxis yAxis = createYAxis();
         final CategoryAxis xAxis = new CategoryAxis();
         xAxis.setLabel("Temps");
@@ -61,16 +54,45 @@ public class Ui extends Application {
         chart.setPrefHeight(400);
 
         stage.setScene(new Scene(chart));
-        watcher.getObservable().subscribe(m -> {
-            Observable.just(m)
-                    .map(mqttMessage -> new String(mqttMessage.getPayload()))
-                    .filter(s -> s.startsWith("temperature"))
-                    .subscribe(s1 -> {
-                        System.out.println(s1);
-                        temperatures.add(s1.substring(13));
-                        refresh(lineChartData);
-                    });
-        });
+
+        Observable<GroupedObservable<String, String>> obs = watcher.getObservable()
+                .doOnError(t -> t.printStackTrace())
+                .map(m -> new String(m.getPayload()))
+                .groupBy(s -> s.split(":")[0]);
+
+        obs.filter(gpr -> gpr.getKey().equals("temperature"))
+           .map(gpr -> gpr.asObservable())
+           .subscribe(stringObs -> {
+               stringObs.map(s -> new Entry<>(s.substring(13), Instant.now().toEpochMilli()))
+                       .buffer(5)
+                       .subscribe(map -> {
+                           refresh(lineChartData, map, "temperature", 0);
+                       });
+           });
+        reactOnPositionEvent(obs, lineChartData, "x", 1);
+        reactOnPositionEvent(obs, lineChartData, "y", 2);
+        reactOnPositionEvent(obs, lineChartData, "z", 3);
+
+    }
+
+    private void reactOnPositionEvent(Observable<GroupedObservable<String, String>> obs,
+                                      ObservableList<XYChart.Series<String, Float>> lineChartData,
+                                      String coordonate,
+                                      int index){
+
+        obs.filter(gpr -> gpr.getKey().equals("position"))
+                .map(gpr -> gpr.asObservable())
+                .subscribe(stringObs -> {
+                    stringObs
+                            .flatMap(s1 -> Observable.from(s1.split(" ")))
+                            .filter(s2 -> s2.contains(coordonate))
+                            .map(s -> new Entry<>(s.substring(2), Instant.now().toEpochMilli()))
+                            .buffer(5)
+                            .subscribe(map -> {
+                                refresh(lineChartData, map, coordonate, index);
+                            });
+                });
+
     }
 
     private void stageSetup(Stage stage) {
@@ -81,29 +103,32 @@ public class Ui extends Application {
         stage.setY(Screen.getPrimary().getVisualBounds().getMinY());
     }
 
-    private void refresh(ObservableList<XYChart.Series<String, Float>> lineChartData) {
+    private void refresh(ObservableList<XYChart.Series<String, Float>> lineChartData, List<Entry<String, Long>> datas, String label, int pos) {
         System.out.println("Refresh");
         Platform.runLater(() -> {
-            lineChartData.clear();
-            lineChartData.add(createSerie());
+            if(pos < lineChartData.size() ){
+                lineChartData.remove(pos);
+            }
+            lineChartData.add(pos, createSerie(datas, label));
         });
     }
 
     private NumberAxis createYAxis() {
-        return new NumberAxis("Variation", 0, 40, 0.1);
+        return new NumberAxis("Variation", -100, 100, 5);
     }
 
-    private XYChart.Series<String, Float> createSerie() {
+    private XYChart.Series<String, Float> createSerie(List<Entry<String, Long>> source, String name) {
         SimpleDateFormat dateFormat = new SimpleDateFormat("HH-mm-ss");
         final ObservableList<XYChart.Data<String, Float>> observableList = FXCollections
                 .observableArrayList();
-        temperatures.stream().forEach(temperature -> {
+        source.stream().forEach(pair -> {
             XYChart.Data<String, Float> data = new XYChart.Data<>(
-                    dateFormat.format(new Date(Instant.now().toEpochMilli())),
-                    Float.parseFloat(temperature));
+                    dateFormat.format(new Date(pair.getValue())),
+                    Float.parseFloat(pair.getKey()));
             observableList.add(data);
         });
         return new XYChart.Series<>(
-                "Sensor", observableList);
+                name, observableList);
     }
+
 }

@@ -22,9 +22,9 @@ public class Watcher {
     private Observable<MqttMessage> observable;
 
     public Watcher() throws MqttException {
-        cli = new MqttClient("tcp://localhost:1883", "domoWatcher", new MemoryPersistence());
+        cli = new MqttClient("tcp://broker.mqtt-dashboard.com:1883", "domoWatcher", new MemoryPersistence());
         callBack = new CallBack();
-        create("devices");
+        create("devicesXebia");
     }
 
     private void create(String topic) {
@@ -74,6 +74,7 @@ public class Watcher {
 
         @Override
         public void messageArrived(String topic, final MqttMessage mqttMessage) throws Exception {
+            System.out.println(new String(mqttMessage.getPayload()));
             Observable.from(subscribers).filter(s -> !s.isUnsubscribed()).subscribe(s -> s.onNext(mqttMessage));
         }
 
